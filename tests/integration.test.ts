@@ -80,6 +80,40 @@ afterAll(() => {
   }
 });
 
+let testTechnicianId: string;
+
+beforeAll(() => {
+  const tech = createTechnician({
+    name: '默认测试技师',
+    employee_no: 'TEST-TECH-DEFAULT',
+    phone: '13800000000',
+    skill_tags: '发动机,电路,变速箱,高级',
+  });
+  testTechnicianId = tech.id;
+
+  const today = new Date().toISOString().split('T')[0];
+  createSchedule({
+    technician_id: tech.id,
+    shift_date: today,
+    shift_type: 'morning',
+  });
+});
+
+function createAvailableTech(employeeNo: string, name: string): string {
+  const tech = createTechnician({
+    name,
+    employee_no: employeeNo,
+    skill_tags: '发动机,高级',
+  });
+  const today = new Date().toISOString().split('T')[0];
+  createSchedule({
+    technician_id: tech.id,
+    shift_date: today,
+    shift_type: 'morning',
+  });
+  return tech.id;
+}
+
 describe('Vehicle Management', () => {
   test('should create a vehicle successfully', () => {
     const vehicle = createVehicle({
@@ -327,9 +361,9 @@ describe('Work Order Management', () => {
       fault_level: 'minor',
     });
 
-    const assigned = assignWorkOrder(order.id, '张师傅');
+    const assigned = assignWorkOrder(order.id, testTechnicianId);
     expect(assigned.status).toBe('in_repair');
-    expect(assigned.assigned_to).toBe('张师傅');
+    expect(assigned.assigned_to).toBe(testTechnicianId);
 
     const updatedVehicle = getVehicleById(vehicle.id);
     expect(updatedVehicle!.status).toBe('in_repair');
@@ -348,7 +382,7 @@ describe('Work Order Management', () => {
       fault_level: 'minor',
     });
 
-    assignWorkOrder(order.id, '李师傅');
+    assignWorkOrder(order.id, testTechnicianId);
 
     const updated = recordDiagnosis(order.id, '空调压缩机故障，需要更换压缩机');
     expect(updated.diagnosis).toBe('空调压缩机故障，需要更换压缩机');
@@ -367,7 +401,7 @@ describe('Work Order Management', () => {
       fault_level: 'minor',
     });
 
-    assignWorkOrder(order.id, '王师傅');
+    assignWorkOrder(order.id, testTechnicianId);
     const updated = recordLaborHours(order.id, 4.5);
     expect(updated.labor_hours).toBe(4.5);
   });
@@ -385,7 +419,7 @@ describe('Work Order Management', () => {
       fault_level: 'minor',
     });
 
-    assignWorkOrder(order.id, '赵师傅');
+    assignWorkOrder(order.id, testTechnicianId);
     recordLaborHours(order.id, 1);
 
     const completed = completeWorkOrder(order.id, '机油更换完成，运行正常');
@@ -406,7 +440,7 @@ describe('Work Order Management', () => {
       fault_level: 'minor',
     });
 
-    assignWorkOrder(order.id, '孙师傅');
+    assignWorkOrder(order.id, testTechnicianId);
     completeWorkOrder(order.id, '电瓶更换完成');
 
     const accepted = acceptWorkOrder(order.id, '验收通过，车辆恢复正常', '质检李工');
@@ -431,7 +465,7 @@ describe('Work Order Management', () => {
       fault_level: 'minor',
     });
 
-    assignWorkOrder(order.id, '周师傅');
+    assignWorkOrder(order.id, testTechnicianId);
 
     expect(() => {
       acceptWorkOrder(order.id, '直接完成', '测试员');
@@ -459,7 +493,7 @@ describe('Work Order Management', () => {
       fault_level: 'minor',
     });
 
-    assignWorkOrder(order.id, '吴师傅');
+    assignWorkOrder(order.id, testTechnicianId);
     useSparePart(order.id, part.id, 2, '仓库管理员');
 
     const partAfterUse = getSparePartById(part.id);
@@ -493,7 +527,7 @@ describe('Work Order Management', () => {
       fault_level: 'minor',
     });
 
-    assignWorkOrder(order.id, '郑师傅');
+    assignWorkOrder(order.id, testTechnicianId);
     completeWorkOrder(order.id, '雨刷更换完成');
     acceptWorkOrder(order.id, '验收通过', '质检');
 
@@ -574,7 +608,7 @@ describe('Spare Part Management', () => {
       fault_level: 'minor',
     });
 
-    assignWorkOrder(order.id, '冯师傅');
+    assignWorkOrder(order.id, testTechnicianId);
 
     expect(() => {
       useSparePart(order.id, part.id, 4, '仓库管理员');
@@ -602,7 +636,7 @@ describe('Spare Part Management', () => {
       fault_level: 'minor',
     });
 
-    assignWorkOrder(order.id, '陈师傅');
+    assignWorkOrder(order.id, testTechnicianId);
     useSparePart(order.id, part.id, 1, '仓库管理员');
 
     expect(() => {
@@ -698,7 +732,7 @@ describe('Work Order with Maintenance Plan', () => {
       fault_level: 'minor',
     });
 
-    assignWorkOrder(order.id, '维修师傅');
+    assignWorkOrder(order.id, testTechnicianId);
     completeWorkOrder(order.id, '保养完成');
     acceptWorkOrder(order.id, '验收通过', '质检员');
 
@@ -722,7 +756,7 @@ describe('Export Functionality', () => {
       description: '用于测试导出功能',
     });
 
-    assignWorkOrder(order.id, '测试师傅');
+    assignWorkOrder(order.id, testTechnicianId);
     recordDiagnosis(order.id, '测试诊断结果');
     recordLaborHours(order.id, 2);
     completeWorkOrder(order.id, '测试完工结果');
@@ -774,7 +808,7 @@ describe('Edge Cases and Data Consistency', () => {
       fault_level: 'minor',
     });
 
-    assignWorkOrder(order.id, '测试员');
+    assignWorkOrder(order.id, testTechnicianId);
     useSparePart(order.id, part.id, 3, '仓库管理员');
 
     closeDatabase();
@@ -817,7 +851,7 @@ describe('Edge Cases and Data Consistency', () => {
       fault_level: 'minor',
     });
 
-    assignWorkOrder(order.id, '维修工');
+    assignWorkOrder(order.id, testTechnicianId);
     useSparePart(order.id, part.id, 2, '仓管');
 
     const detail = getWorkOrderDetail(order.id);
@@ -844,7 +878,7 @@ describe('Edge Cases and Data Consistency', () => {
       fault_level: 'minor',
     });
 
-    assignWorkOrder(order.id, '首保专员');
+    assignWorkOrder(order.id, testTechnicianId);
     completeWorkOrder(order.id, '首保完成');
     acceptWorkOrder(order.id, '验收通过', '首保主管');
 
@@ -1008,6 +1042,101 @@ describe('Technician Scheduling', () => {
     expect(error!.code).toBe('TECHNICIAN_INACTIVE');
   });
 
+  test('should not assign work order to non-existent technician', () => {
+    const vehicle = createVehicle({
+      plate_number: '京H-TEST-003',
+      model: '测试车辆3',
+      purchase_date: '2024-01-01',
+    });
+
+    const order = createWorkOrder({
+      vehicle_id: vehicle.id,
+      title: '测试派工工单3',
+      fault_level: 'minor',
+    });
+
+    let error: BusinessError | undefined;
+    try {
+      assignWorkOrder(order.id, 'non-existent-technician-id');
+    } catch (e) {
+      error = e as BusinessError;
+    }
+
+    expect(error).toBeDefined();
+    expect(error!.code).toBe('TECHNICIAN_NOT_FOUND');
+    expect(order.status).toBe('pending_assign');
+
+    const checkOrder = getWorkOrderById(order.id);
+    expect(checkOrder!.status).toBe('pending_assign');
+    expect(checkOrder!.assigned_to).toBeNull();
+  });
+
+  test('should not assign work order with empty technician id', () => {
+    const vehicle = createVehicle({
+      plate_number: '京H-TEST-004',
+      model: '测试车辆4',
+      purchase_date: '2024-01-01',
+    });
+
+    const order = createWorkOrder({
+      vehicle_id: vehicle.id,
+      title: '测试派工工单4',
+      fault_level: 'minor',
+    });
+
+    let error: BusinessError | undefined;
+    try {
+      assignWorkOrder(order.id, '');
+    } catch (e) {
+      error = e as BusinessError;
+    }
+
+    expect(error).toBeDefined();
+    expect(error!.code).toBe('TECHNICIAN_NOT_FOUND');
+
+    const checkOrder = getWorkOrderById(order.id);
+    expect(checkOrder!.status).toBe('pending_assign');
+  });
+
+  test('should verify full assignment validation flow', () => {
+    const tech = createTechnician({
+      name: '完整校验技师',
+      employee_no: 'TECH-FULL-CHECK-001',
+      skill_tags: '发动机,高级',
+    });
+    updateTechnician(tech.id, { status: 'inactive' } as any);
+
+    const vehicle = createVehicle({
+      plate_number: '京H-TEST-005',
+      model: '测试车辆5',
+      purchase_date: '2024-01-01',
+    });
+
+    const order = createWorkOrder({
+      vehicle_id: vehicle.id,
+      title: '测试派工工单5',
+      fault_level: 'minor',
+    });
+
+    expect(() => assignWorkOrder(order.id, tech.id)).toThrow(BusinessError);
+    expect(() => assignWorkOrder(order.id, tech.id)).toThrow('非激活');
+
+    updateTechnician(tech.id, { status: 'active' } as any);
+    expect(() => assignWorkOrder(order.id, tech.id)).toThrow(BusinessError);
+    expect(() => assignWorkOrder(order.id, tech.id)).toThrow('不在值班时间');
+
+    const today = new Date().toISOString().split('T')[0];
+    createSchedule({
+      technician_id: tech.id,
+      shift_date: today,
+      shift_type: 'morning',
+    });
+
+    const assigned = assignWorkOrder(order.id, tech.id);
+    expect(assigned.status).toBe('in_repair');
+    expect(assigned.assigned_to).toBe(tech.id);
+  });
+
   test('should recommend technicians based on fault level and skills', () => {
     createTechnician({
       name: '周高级',
@@ -1069,7 +1198,7 @@ describe('Spare Part Preemption', () => {
       fault_level: 'minor',
     });
 
-    assignWorkOrder(order.id, '测试员');
+    assignWorkOrder(order.id, testTechnicianId);
 
     const preempt = preemptSparePart(order.id, part.id, 5, '仓库管理员');
     expect(preempt).toBeDefined();
@@ -1102,7 +1231,7 @@ describe('Spare Part Preemption', () => {
       fault_level: 'minor',
     });
 
-    assignWorkOrder(order.id, '测试员');
+    assignWorkOrder(order.id, testTechnicianId);
     preemptSparePart(order.id, part.id, 3, '管理员');
 
     expect(() => {
@@ -1130,7 +1259,7 @@ describe('Spare Part Preemption', () => {
       fault_level: 'minor',
     });
 
-    assignWorkOrder(order.id, '测试员');
+    assignWorkOrder(order.id, testTechnicianId);
     preemptSparePart(order.id, part.id, 4, '管理员');
 
     const released = releasePreempt(order.id, part.id, '管理员', '测试释放');
@@ -1162,7 +1291,7 @@ describe('Spare Part Preemption', () => {
       fault_level: 'minor',
     });
 
-    assignWorkOrder(order.id, '测试员');
+    assignWorkOrder(order.id, testTechnicianId);
     preemptSparePart(order.id, part.id, 5, '管理员');
     completeWorkOrder(order.id, '维修完成');
 
@@ -1201,7 +1330,7 @@ describe('Spare Part Preemption', () => {
       fault_level: 'minor',
     });
 
-    assignWorkOrder(order.id, '测试员');
+    assignWorkOrder(order.id, testTechnicianId);
     preemptSparePart(order.id, part1.id, 5, '管理员');
     preemptSparePart(order.id, part2.id, 10, '管理员');
 
@@ -1238,7 +1367,7 @@ describe('Spare Part Preemption', () => {
       fault_level: 'minor',
     });
 
-    assignWorkOrder(order.id, '测试员');
+    assignWorkOrder(order.id, testTechnicianId);
     preemptSparePart(order.id, part.id, 8, '管理员');
     completeWorkOrder(order.id, '维修完成');
 
@@ -1273,7 +1402,7 @@ describe('Spare Part Preemption', () => {
       fault_level: 'minor',
     });
 
-    assignWorkOrder(order.id, '测试员');
+    assignWorkOrder(order.id, testTechnicianId);
     preemptSparePart(order.id, part.id, 5, '管理员');
     completeWorkOrder(order.id, '完成');
 
@@ -1317,7 +1446,7 @@ describe('Timeout Warning System', () => {
       fault_level: 'minor',
     });
 
-    assignWorkOrder(order.id, '测试员');
+    assignWorkOrder(order.id, testTechnicianId);
 
     const info = getWorkOrderTimeoutInfo(order.id);
     expect(info).toBeDefined();
@@ -1403,7 +1532,7 @@ describe('Work Order Statistics', () => {
       fault_level: 'minor',
     });
 
-    assignWorkOrder(order.id, '测试员');
+    assignWorkOrder(order.id, testTechnicianId);
     useSparePart(order.id, part.id, 2, '管理员');
 
     const stats = getWorkOrderStatistics({ part_id: part.id });
@@ -1475,7 +1604,7 @@ describe('Data Consistency After Restart', () => {
       fault_level: 'minor',
     });
 
-    assignWorkOrder(order.id, '测试员');
+    assignWorkOrder(order.id, testTechnicianId);
     preemptSparePart(order.id, part.id, 10, '管理员');
 
     closeDatabase();
@@ -1504,7 +1633,7 @@ describe('Data Consistency After Restart', () => {
       fault_level: 'medium',
     });
 
-    assignWorkOrder(order.id, '测试员');
+    assignWorkOrder(order.id, testTechnicianId);
     const infoBefore = getWorkOrderTimeoutInfo(order.id);
 
     closeDatabase();

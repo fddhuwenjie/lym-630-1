@@ -122,13 +122,16 @@ export function assignWorkOrder(id: string, assignedTo: string): WorkOrder {
   }
 
   const tech = getTechnicianById(assignedTo);
-  if (tech) {
-    if (tech.status !== 'active') {
-      throw new BusinessError('TECHNICIAN_INACTIVE', '技师状态为非激活，无法分配工单');
-    }
-    if (!isTechnicianAvailable(assignedTo, now())) {
-      throw new BusinessError('TECHNICIAN_UNAVAILABLE', '技师当前不在值班时间，无法分配工单');
-    }
+  if (!tech) {
+    throw new BusinessError('TECHNICIAN_NOT_FOUND', '技师不存在，必须分配给已登记的技师');
+  }
+
+  if (tech.status !== 'active') {
+    throw new BusinessError('TECHNICIAN_INACTIVE', '技师状态为非激活，无法分配工单');
+  }
+
+  if (!isTechnicianAvailable(assignedTo, now())) {
+    throw new BusinessError('TECHNICIAN_UNAVAILABLE', '技师当前不在值班时间，无法分配工单');
   }
 
   const db = getDatabase();
