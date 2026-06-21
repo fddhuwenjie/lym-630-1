@@ -1,5 +1,5 @@
 import { getDatabase } from '../database';
-import { SparePart, PartTransaction, WorkOrderPart, PartTransactionType } from '../types';
+import { SparePart, PartTransaction, WorkOrderPart, PartTransactionType, PartPreempt, PreemptStatus } from '../types';
 import { generateId, now, BusinessError, validateRequiredFields } from '../utils';
 
 export function createSparePart(data: {
@@ -21,12 +21,14 @@ export function createSparePart(data: {
 
   const id = generateId();
   const createdAt = now();
+  const stockQty = data.stock_quantity || 0;
 
   const stmt = db.prepare(`
     INSERT INTO spare_parts (
       id, name, code, specification, unit, stock_quantity,
+      preempt_quantity, available_quantity,
       warning_threshold, unit_price, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
   `);
   stmt.run(
     id,
@@ -34,7 +36,8 @@ export function createSparePart(data: {
     data.code,
     data.specification || null,
     data.unit,
-    data.stock_quantity || 0,
+    stockQty,
+    stockQty,
     data.warning_threshold ?? 10,
     data.unit_price || 0,
     createdAt,
@@ -113,22 +116,259 @@ export function inboundPart(partId: string, quantity: number, operator: string, 
   const createdAt = now();
   const beforeBalance = part.stock_quantity;
   const afterBalance = beforeBalance + quantity;
+  const beforePreempt = part.preempt_quantity;
+  const afterPreempt = beforePreempt;
+  const beforeAvailable = part.available_quantity;
+  const afterAvailable = beforeAvailable + quantity;
 
   const tx = db.transaction(() => {
-    db.prepare('UPDATE spare_parts SET stock_quantity = ?, updated_at = ? WHERE id = ?')
-      .run(afterBalance, createdAt, partId);
+    db.prepare('UPDATE spare_parts SET stock_quantity = ?, available_quantity = ?, updated_at = ? WHERE id = ?')
+      .run(afterBalance, afterAvailable, createdAt, partId);
 
     db.prepare(`
       INSERT INTO part_transactions (
         id, part_id, work_order_id, type, quantity, before_balance,
-        after_balance, operator, remark, created_at
-      ) VALUES (?, ?, NULL, 'inbound', ?, ?, ?, ?, ?, ?)
-    `).run(id, partId, quantity, beforeBalance, afterBalance, operator, remark || null, createdAt);
+        after_balance, before_preempt, after_preempt, operator, remark, created_at
+      ) VALUES (?, ?, NULL, 'inbound', ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, partId, quantity, beforeBalance, afterBalance, beforePreempt, afterPreempt, operator, remark || null, createdAt);
   });
 
   tx();
 
   return getPartTransactionById(id)!;
+}
+
+export function preemptPart(
+  workOrderId: string,
+  partId: string,
+  quantity: number,
+  operator: string
+): PartPreempt {
+  const part = getSparePartById(partId);
+  if (!part) {
+    throw new BusinessError('PART_NOT_FOUND', '备件不存在');
+  }
+
+  if (quantity <= 0) {
+    throw new BusinessError('INVALID_QUANTITY', '预占数量必须大于0');
+  }
+
+  if (part.available_quantity < quantity) {
+    throw new BusinessError('INSUFFICIENT_STOCK', `可用库存不足，当前可用: ${part.available_quantity}，需要: ${quantity}`);
+  }
+
+  const db = getDatabase();
+  const txnId = generateId();
+  const preemptId = generateId();
+  const createdAt = now();
+
+  const existingPreempt = db.prepare(`
+    SELECT * FROM part_preempts 
+    WHERE work_order_id = ? AND part_id = ? AND status = 'preempted'
+  `).get(workOrderId, partId) as PartPreempt | undefined;
+
+  if (existingPreempt) {
+    throw new BusinessError('DUPLICATE_PREEMPT', '该备件已在此工单中预占，不能重复预占');
+  }
+
+  const beforeBalance = part.stock_quantity;
+  const afterBalance = beforeBalance;
+  const beforePreempt = part.preempt_quantity;
+  const afterPreempt = beforePreempt + quantity;
+  const beforeAvailable = part.available_quantity;
+  const afterAvailable = beforeAvailable - quantity;
+
+  const tx = db.transaction(() => {
+    db.prepare(`
+      UPDATE spare_parts 
+      SET preempt_quantity = ?, available_quantity = ?, updated_at = ? 
+      WHERE id = ?
+    `).run(afterPreempt, afterAvailable, createdAt, partId);
+
+    db.prepare(`
+      INSERT INTO part_transactions (
+        id, part_id, work_order_id, type, quantity, before_balance,
+        after_balance, before_preempt, after_preempt, operator, remark, created_at
+      ) VALUES (?, ?, ?, 'preempt', ?, ?, ?, ?, ?, ?, '备件预占', ?)
+    `).run(txnId, partId, workOrderId, quantity, beforeBalance, afterBalance, beforePreempt, afterPreempt, operator, createdAt);
+
+    db.prepare(`
+      INSERT INTO part_preempts (
+        id, work_order_id, part_id, part_name, quantity, unit_price,
+        status, preempted_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'preempted', ?)
+    `).run(preemptId, workOrderId, partId, part.name, quantity, part.unit_price, createdAt);
+  });
+
+  tx();
+
+  return getPartPreemptById(preemptId)!;
+}
+
+export function releasePreempt(
+  workOrderId: string,
+  partId: string,
+  operator: string,
+  reason?: string
+): PartPreempt {
+  const db = getDatabase();
+
+  const preempt = db.prepare(`
+    SELECT * FROM part_preempts 
+    WHERE work_order_id = ? AND part_id = ? AND status = 'preempted'
+  `).get(workOrderId, partId) as PartPreempt | undefined;
+
+  if (!preempt) {
+    throw new BusinessError('PREEMPT_NOT_FOUND', '未找到该工单的预占备件记录');
+  }
+
+  const part = getSparePartById(partId);
+  if (!part) {
+    throw new BusinessError('PART_NOT_FOUND', '备件不存在');
+  }
+
+  const txnId = generateId();
+  const createdAt = now();
+  const beforeBalance = part.stock_quantity;
+  const afterBalance = beforeBalance;
+  const beforePreempt = part.preempt_quantity;
+  const afterPreempt = beforePreempt - preempt.quantity;
+  const beforeAvailable = part.available_quantity;
+  const afterAvailable = beforeAvailable + preempt.quantity;
+
+  const tx = db.transaction(() => {
+    db.prepare(`
+      UPDATE spare_parts 
+      SET preempt_quantity = ?, available_quantity = ?, updated_at = ? 
+      WHERE id = ?
+    `).run(afterPreempt, afterAvailable, createdAt, partId);
+
+    db.prepare(`
+      INSERT INTO part_transactions (
+        id, part_id, work_order_id, type, quantity, before_balance,
+        after_balance, before_preempt, after_preempt, operator, remark, created_at
+      ) VALUES (?, ?, ?, 'preempt_release', ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(txnId, partId, workOrderId, preempt.quantity, beforeBalance, afterBalance, beforePreempt, afterPreempt, operator, reason || '预占释放', createdAt);
+
+    db.prepare(`
+      UPDATE part_preempts 
+      SET status = 'released', released_at = ?, released_by = ?, release_reason = ? 
+      WHERE id = ?
+    `).run(createdAt, operator, reason || null, preempt.id);
+  });
+
+  tx();
+
+  return getPartPreemptById(preempt.id)!;
+}
+
+export function confirmPreempt(
+  workOrderId: string,
+  partId: string,
+  operator: string
+): PartPreempt {
+  const db = getDatabase();
+
+  const preempt = db.prepare(`
+    SELECT * FROM part_preempts 
+    WHERE work_order_id = ? AND part_id = ? AND status = 'preempted'
+  `).get(workOrderId, partId) as PartPreempt | undefined;
+
+  if (!preempt) {
+    throw new BusinessError('PREEMPT_NOT_FOUND', '未找到该工单的预占备件记录');
+  }
+
+  const part = getSparePartById(partId);
+  if (!part) {
+    throw new BusinessError('PART_NOT_FOUND', '备件不存在');
+  }
+
+  const txnId = generateId();
+  const workOrderPartId = generateId();
+  const createdAt = now();
+  const beforeBalance = part.stock_quantity;
+  const afterBalance = beforeBalance - preempt.quantity;
+  const beforePreempt = part.preempt_quantity;
+  const afterPreempt = beforePreempt - preempt.quantity;
+  const beforeAvailable = part.available_quantity;
+  const afterAvailable = beforeAvailable;
+
+  const tx = db.transaction(() => {
+    db.prepare(`
+      UPDATE spare_parts 
+      SET stock_quantity = ?, preempt_quantity = ?, updated_at = ? 
+      WHERE id = ?
+    `).run(afterBalance, afterPreempt, createdAt, partId);
+
+    db.prepare(`
+      INSERT INTO part_transactions (
+        id, part_id, work_order_id, type, quantity, before_balance,
+        after_balance, before_preempt, after_preempt, operator, remark, created_at
+      ) VALUES (?, ?, ?, 'preempt_confirm', ?, ?, ?, ?, ?, ?, '预占确认-正式扣减', ?)
+    `).run(txnId, partId, workOrderId, preempt.quantity, beforeBalance, afterBalance, beforePreempt, afterPreempt, operator, createdAt);
+
+    db.prepare(`
+      UPDATE part_preempts 
+      SET status = 'confirmed', confirmed_at = ?, confirmed_by = ? 
+      WHERE id = ?
+    `).run(createdAt, operator, preempt.id);
+
+    db.prepare(`
+      INSERT INTO work_order_parts (
+        id, work_order_id, part_id, part_name, quantity, unit_price, returned, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 0, ?)
+    `).run(workOrderPartId, workOrderId, partId, part.name, preempt.quantity, part.unit_price, createdAt);
+  });
+
+  tx();
+
+  return getPartPreemptById(preempt.id)!;
+}
+
+export function releaseAllPreempts(workOrderId: string, operator: string, reason?: string): PartPreempt[] {
+  const db = getDatabase();
+  const preempts = db.prepare(`
+    SELECT * FROM part_preempts WHERE work_order_id = ? AND status = 'preempted'
+  `).all(workOrderId) as PartPreempt[];
+
+  const results: PartPreempt[] = [];
+  for (const preempt of preempts) {
+    const result = releasePreempt(workOrderId, preempt.part_id, operator, reason);
+    results.push(result);
+  }
+
+  return results;
+}
+
+export function confirmAllPreempts(workOrderId: string, operator: string): PartPreempt[] {
+  const db = getDatabase();
+  const preempts = db.prepare(`
+    SELECT * FROM part_preempts WHERE work_order_id = ? AND status = 'preempted'
+  `).all(workOrderId) as PartPreempt[];
+
+  const results: PartPreempt[] = [];
+  for (const preempt of preempts) {
+    const result = confirmPreempt(workOrderId, preempt.part_id, operator);
+    results.push(result);
+  }
+
+  return results;
+}
+
+export function getPartPreemptById(id: string): PartPreempt | undefined {
+  const db = getDatabase();
+  return db.prepare('SELECT * FROM part_preempts WHERE id = ?').get(id) as PartPreempt | undefined;
+}
+
+export function getWorkOrderPreempts(workOrderId: string, status?: PreemptStatus): PartPreempt[] {
+  const db = getDatabase();
+  if (status) {
+    return db.prepare(`
+      SELECT * FROM part_preempts WHERE work_order_id = ? AND status = ? ORDER BY preempted_at DESC
+    `).all(workOrderId, status) as PartPreempt[];
+  }
+  return db.prepare('SELECT * FROM part_preempts WHERE work_order_id = ? ORDER BY preempted_at DESC')
+    .all(workOrderId) as PartPreempt[];
 }
 
 export function consumePart(workOrderId: string, partId: string, quantity: number, operator: string): WorkOrderPart {
@@ -141,8 +381,8 @@ export function consumePart(workOrderId: string, partId: string, quantity: numbe
     throw new BusinessError('INVALID_QUANTITY', '领用数量必须大于0');
   }
 
-  if (part.stock_quantity < quantity) {
-    throw new BusinessError('INSUFFICIENT_STOCK', `备件库存不足，当前库存: ${part.stock_quantity}，需要: ${quantity}`);
+  if (part.available_quantity < quantity) {
+    throw new BusinessError('INSUFFICIENT_STOCK', `可用库存不足，当前可用: ${part.available_quantity}，需要: ${quantity}`);
   }
 
   const db = getDatabase();
@@ -151,17 +391,29 @@ export function consumePart(workOrderId: string, partId: string, quantity: numbe
   const createdAt = now();
   const beforeBalance = part.stock_quantity;
   const afterBalance = beforeBalance - quantity;
+  const beforePreempt = part.preempt_quantity;
+  const afterPreempt = beforePreempt;
+  const beforeAvailable = part.available_quantity;
+  const afterAvailable = beforeAvailable - quantity;
+
+  const existingPart = db.prepare(`
+    SELECT * FROM work_order_parts WHERE work_order_id = ? AND part_id = ? AND returned = 0
+  `).get(workOrderId, partId);
+
+  if (existingPart) {
+    throw new BusinessError('DUPLICATE_PART', '该备件已在此工单中领用，不能重复领用');
+  }
 
   const tx = db.transaction(() => {
-    db.prepare('UPDATE spare_parts SET stock_quantity = ?, updated_at = ? WHERE id = ?')
-      .run(afterBalance, createdAt, partId);
+    db.prepare('UPDATE spare_parts SET stock_quantity = ?, available_quantity = ?, updated_at = ? WHERE id = ?')
+      .run(afterBalance, afterAvailable, createdAt, partId);
 
     db.prepare(`
       INSERT INTO part_transactions (
         id, part_id, work_order_id, type, quantity, before_balance,
-        after_balance, operator, remark, created_at
-      ) VALUES (?, ?, ?, 'outbound', ?, ?, ?, ?, '工单领用', ?)
-    `).run(txnId, partId, workOrderId, quantity, beforeBalance, afterBalance, operator, createdAt);
+        after_balance, before_preempt, after_preempt, operator, remark, created_at
+      ) VALUES (?, ?, ?, 'outbound', ?, ?, ?, ?, ?, ?, '工单领用', ?)
+    `).run(txnId, partId, workOrderId, quantity, beforeBalance, afterBalance, beforePreempt, afterPreempt, operator, createdAt);
 
     db.prepare(`
       INSERT INTO work_order_parts (
@@ -195,17 +447,21 @@ export function returnPart(workOrderId: string, partId: string, operator: string
   const createdAt = now();
   const beforeBalance = part.stock_quantity;
   const afterBalance = beforeBalance + workOrderPart.quantity;
+  const beforePreempt = part.preempt_quantity;
+  const afterPreempt = beforePreempt;
+  const beforeAvailable = part.available_quantity;
+  const afterAvailable = beforeAvailable + workOrderPart.quantity;
 
   const tx = db.transaction(() => {
-    db.prepare('UPDATE spare_parts SET stock_quantity = ?, updated_at = ? WHERE id = ?')
-      .run(afterBalance, createdAt, partId);
+    db.prepare('UPDATE spare_parts SET stock_quantity = ?, available_quantity = ?, updated_at = ? WHERE id = ?')
+      .run(afterBalance, afterAvailable, createdAt, partId);
 
     db.prepare(`
       INSERT INTO part_transactions (
         id, part_id, work_order_id, type, quantity, before_balance,
-        after_balance, operator, remark, created_at
-      ) VALUES (?, ?, ?, 'return', ?, ?, ?, ?, '工单退回', ?)
-    `).run(txnId, partId, workOrderId, workOrderPart.quantity, beforeBalance, afterBalance, operator, createdAt);
+        after_balance, before_preempt, after_preempt, operator, remark, created_at
+      ) VALUES (?, ?, ?, 'return', ?, ?, ?, ?, ?, ?, '工单退回', ?)
+    `).run(txnId, partId, workOrderId, workOrderPart.quantity, beforeBalance, afterBalance, beforePreempt, afterPreempt, operator, createdAt);
 
     db.prepare('UPDATE work_order_parts SET returned = 1 WHERE id = ?')
       .run(workOrderPart.id);
@@ -260,7 +516,7 @@ export function getLowStockParts(): SparePart[] {
   const db = getDatabase();
   return db.prepare(`
     SELECT * FROM spare_parts 
-    WHERE stock_quantity <= warning_threshold 
-    ORDER BY stock_quantity ASC
+    WHERE available_quantity <= warning_threshold 
+    ORDER BY available_quantity ASC
   `).all() as SparePart[];
 }

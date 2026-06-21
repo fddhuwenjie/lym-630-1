@@ -2,11 +2,19 @@ export type VehicleStatus = 'running' | 'idle' | 'in_repair' | 'scrapped';
 
 export type FaultLevel = 'minor' | 'medium' | 'major' | 'critical';
 
-export type WorkOrderStatus = 'pending_assign' | 'in_repair' | 'pending_acceptance' | 'completed' | 'cancelled';
+export type WorkOrderStatus = 'pending_assign' | 'in_repair' | 'pending_acceptance' | 'completed' | 'cancelled' | 'rejected';
 
 export type MaintenanceType = 'routine' | 'mileage_based' | 'time_based' | 'fault_based';
 
-export type PartTransactionType = 'inbound' | 'outbound' | 'return';
+export type PartTransactionType = 'inbound' | 'outbound' | 'return' | 'preempt' | 'preempt_release' | 'preempt_confirm';
+
+export type TechnicianStatus = 'active' | 'inactive';
+
+export type ShiftType = 'morning' | 'afternoon' | 'night' | 'day_off';
+
+export type PreemptStatus = 'preempted' | 'released' | 'confirmed';
+
+export type TimeoutStatus = 'normal' | 'warning' | 'overdue';
 
 export interface Vehicle {
   id: string;
@@ -65,6 +73,9 @@ export interface WorkOrder {
   updated_at: string;
   cancelled_at: string | null;
   cancel_reason: string | null;
+  in_repair_at: string | null;
+  rejected_at: string | null;
+  reject_reason: string | null;
 }
 
 export interface SparePart {
@@ -74,6 +85,8 @@ export interface SparePart {
   specification: string;
   unit: string;
   stock_quantity: number;
+  preempt_quantity: number;
+  available_quantity: number;
   warning_threshold: number;
   unit_price: number;
   created_at: string;
@@ -120,4 +133,88 @@ export interface ExportRecord {
   parameters: string;
   operator: string;
   created_at: string;
+}
+
+export interface Technician {
+  id: string;
+  name: string;
+  employee_no: string;
+  phone: string;
+  status: TechnicianStatus;
+  skill_tags: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TechnicianSchedule {
+  id: string;
+  technician_id: string;
+  shift_date: string;
+  shift_type: ShiftType;
+  start_time: string | null;
+  end_time: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PartPreempt {
+  id: string;
+  work_order_id: string;
+  part_id: string;
+  part_name: string;
+  quantity: number;
+  unit_price: number;
+  status: PreemptStatus;
+  preempted_at: string;
+  released_at: string | null;
+  confirmed_at: string | null;
+  released_by: string | null;
+  confirmed_by: string | null;
+  release_reason: string | null;
+}
+
+export interface TimeoutConfig {
+  id: string;
+  fault_level: FaultLevel;
+  warning_hours: number;
+  overdue_hours: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkOrderTimeoutInfo {
+  work_order_id: string;
+  timeout_status: TimeoutStatus;
+  remaining_hours: number;
+  elapsed_hours: number;
+  warning_hours: number;
+  overdue_hours: number;
+}
+
+export interface WorkOrderStatisticsFilter {
+  technician_id?: string;
+  vehicle_id?: string;
+  part_id?: string;
+  timeout_status?: TimeoutStatus;
+  status?: WorkOrderStatus;
+  fault_level?: FaultLevel;
+  start_date?: string;
+  end_date?: string;
+}
+
+export interface WorkOrderStatisticsItem {
+  id: string;
+  title: string;
+  fault_level: FaultLevel;
+  status: WorkOrderStatus;
+  vehicle_id: string;
+  plate_number: string;
+  assigned_to: string | null;
+  technician_name: string | null;
+  created_at: string;
+  in_repair_at: string | null;
+  completed_at: string | null;
+  timeout_status: TimeoutStatus;
+  parts_count: number;
+  total_cost: number;
 }

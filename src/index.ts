@@ -5,6 +5,7 @@ import maintenancePlansRouter from './routes/maintenancePlans';
 import workOrdersRouter from './routes/workOrders';
 import sparePartsRouter from './routes/spareParts';
 import exportsRouter from './routes/exports';
+import techniciansRouter from './routes/technicians';
 
 initDatabase();
 
@@ -22,6 +23,7 @@ app.use('/api/maintenance-plans', maintenancePlansRouter);
 app.use('/api/work-orders', workOrdersRouter);
 app.use('/api/spare-parts', sparePartsRouter);
 app.use('/api/exports', exportsRouter);
+app.use('/api/technicians', techniciansRouter);
 
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
   console.error('Unhandled error:', err);

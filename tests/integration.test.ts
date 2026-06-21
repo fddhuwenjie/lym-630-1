@@ -21,9 +21,18 @@ import {
   useSparePart,
   completeWorkOrder,
   acceptWorkOrder,
+  rejectWorkOrder,
   cancelWorkOrder,
   getWorkOrderById,
   getWorkOrderDetail,
+  getRecommendedTechnicians,
+  preemptSparePart,
+  getTimeoutConfig,
+  updateTimeoutConfig,
+  listTimeoutConfigs,
+  getWorkOrderTimeoutInfo,
+  getTimeoutWorkOrders,
+  getWorkOrderStatistics,
 } from '../src/services/workOrderService';
 import {
   createSparePart,
@@ -32,7 +41,22 @@ import {
   getLowStockParts,
   listPartTransactions,
   getWorkOrderParts,
+  getWorkOrderPreempts,
+  preemptPart,
+  releasePreempt,
+  confirmPreempt,
 } from '../src/services/sparePartService';
+import {
+  createTechnician,
+  getTechnicianById,
+  listTechnicians,
+  updateTechnician,
+  createSchedule,
+  listSchedules,
+  isTechnicianAvailable,
+  recommendTechnicians,
+  batchCreateSchedules,
+} from '../src/services/technicianService';
 import { exportWorkOrderDetails, listExportRecords } from '../src/services/exportService';
 import { BusinessError } from '../src/utils';
 import * as fs from 'fs';
@@ -827,5 +851,674 @@ describe('Edge Cases and Data Consistency', () => {
     const updated = getVehicleById(vehicle.id);
     expect(updated!.last_maintenance_date).toBeTruthy();
     expect(updated!.last_maintenance_mileage).toBe(8000);
+  });
+});
+
+describe('Technician Management', () => {
+  test('should create a technician successfully', () => {
+    const tech = createTechnician({
+      name: '张师傅',
+      employee_no: 'TECH001',
+      phone: '13800138001',
+      skill_tags: '发动机,变速箱,高级',
+    });
+
+    expect(tech).toBeDefined();
+    expect(tech.id).toBeTruthy();
+    expect(tech.name).toBe('张师傅');
+    expect(tech.employee_no).toBe('TECH001');
+    expect(tech.status).toBe('active');
+    expect(tech.skill_tags).toContain('发动机');
+  });
+
+  test('should not create technician with duplicate employee no', () => {
+    expect(() => {
+      createTechnician({
+        name: '李师傅',
+        employee_no: 'TECH001',
+      });
+    }).toThrow(BusinessError);
+  });
+
+  test('should list technicians with status filter', () => {
+    const activeTechs = listTechnicians('active');
+    expect(activeTechs.length).toBeGreaterThan(0);
+    expect(activeTechs.every(t => t.status === 'active')).toBe(true);
+  });
+
+  test('should update technician status', () => {
+    const tech = createTechnician({
+      name: '王师傅',
+      employee_no: 'TECH-INACTIVE-001',
+    });
+
+    const updated = updateTechnician(tech.id, { status: 'inactive' } as any);
+    expect(updated.status).toBe('inactive');
+  });
+});
+
+describe('Technician Scheduling', () => {
+  test('should create a schedule for technician', () => {
+    const tech = createTechnician({
+      name: '李师傅',
+      employee_no: 'TECH-SCHED-001',
+    });
+
+    const today = new Date().toISOString().split('T')[0];
+    const schedule = createSchedule({
+      technician_id: tech.id,
+      shift_date: today,
+      shift_type: 'morning',
+    });
+
+    expect(schedule).toBeDefined();
+    expect(schedule.shift_type).toBe('morning');
+    expect(schedule.start_time).toBe('08:00');
+    expect(schedule.end_time).toBe('16:00');
+  });
+
+  test('should check technician availability', () => {
+    const tech = createTechnician({
+      name: '赵师傅',
+      employee_no: 'TECH-AVAIL-001',
+    });
+
+    const today = new Date().toISOString().split('T')[0];
+    createSchedule({
+      technician_id: tech.id,
+      shift_date: today,
+      shift_type: 'morning',
+    });
+
+    const now = new Date();
+    const morningTime = new Date(now);
+    morningTime.setHours(10, 0, 0, 0);
+    const available = isTechnicianAvailable(tech.id, morningTime.toISOString());
+    expect(available).toBe(true);
+
+    const nightTime = new Date(now);
+    nightTime.setHours(23, 0, 0, 0);
+    const notAvailable = isTechnicianAvailable(tech.id, nightTime.toISOString());
+    expect(notAvailable).toBe(false);
+  });
+
+  test('should not assign work order to unavailable technician', () => {
+    const tech = createTechnician({
+      name: '钱师傅',
+      employee_no: 'TECH-UNAVAIL-001',
+    });
+
+    const vehicle = createVehicle({
+      plate_number: '京G-TEST-001',
+      model: '测试车辆',
+      purchase_date: '2024-01-01',
+    });
+
+    const order = createWorkOrder({
+      vehicle_id: vehicle.id,
+      title: '测试派工工单',
+      fault_level: 'minor',
+    });
+
+    const today = new Date().toISOString().split('T')[0];
+    createSchedule({
+      technician_id: tech.id,
+      shift_date: today,
+      shift_type: 'day_off',
+    });
+
+    let error: BusinessError | undefined;
+    try {
+      assignWorkOrder(order.id, tech.id);
+    } catch (e) {
+      error = e as BusinessError;
+    }
+
+    expect(error).toBeDefined();
+    expect(error!.code).toBe('TECHNICIAN_UNAVAILABLE');
+  });
+
+  test('should not assign work order to inactive technician', () => {
+    const tech = createTechnician({
+      name: '孙师傅',
+      employee_no: 'TECH-INACT-002',
+    });
+    updateTechnician(tech.id, { status: 'inactive' } as any);
+
+    const vehicle = createVehicle({
+      plate_number: '京H-TEST-002',
+      model: '测试车辆2',
+      purchase_date: '2024-01-01',
+    });
+
+    const order = createWorkOrder({
+      vehicle_id: vehicle.id,
+      title: '测试派工工单2',
+      fault_level: 'minor',
+    });
+
+    let error: BusinessError | undefined;
+    try {
+      assignWorkOrder(order.id, tech.id);
+    } catch (e) {
+      error = e as BusinessError;
+    }
+
+    expect(error).toBeDefined();
+    expect(error!.code).toBe('TECHNICIAN_INACTIVE');
+  });
+
+  test('should recommend technicians based on fault level and skills', () => {
+    createTechnician({
+      name: '周高级',
+      employee_no: 'TECH-REC-001',
+      skill_tags: '发动机,高级',
+    });
+    createTechnician({
+      name: '吴初级',
+      employee_no: 'TECH-REC-002',
+      skill_tags: '电路,初级',
+    });
+
+    const techs = recommendTechnicians('major', '发动机');
+    expect(techs.length).toBeGreaterThan(0);
+  });
+
+  test('should batch create schedules', () => {
+    const tech = createTechnician({
+      name: '郑批量',
+      employee_no: 'TECH-BATCH-001',
+    });
+
+    const start = new Date();
+    const end = new Date();
+    end.setDate(start.getDate() + 6);
+
+    const schedules = batchCreateSchedules({
+      technician_id: tech.id,
+      start_date: start.toISOString().split('T')[0],
+      end_date: end.toISOString().split('T')[0],
+      shift_type: 'morning',
+      work_days: [1, 2, 3, 4, 5],
+    });
+
+    expect(schedules.length).toBeGreaterThanOrEqual(5);
+    expect(schedules.length).toBeLessThanOrEqual(7);
+  });
+});
+
+describe('Spare Part Preemption', () => {
+  test('should preempt spare part successfully', () => {
+    const part = createSparePart({
+      name: '预占测试滤芯',
+      code: 'PREEMPT-TEST-001',
+      unit: '个',
+      stock_quantity: 20,
+      unit_price: 100,
+    });
+
+    const vehicle = createVehicle({
+      plate_number: '京J-PREEMPT-001',
+      model: '测试预占车辆',
+      purchase_date: '2024-01-01',
+    });
+
+    const order = createWorkOrder({
+      vehicle_id: vehicle.id,
+      title: '预占测试工单',
+      fault_level: 'minor',
+    });
+
+    assignWorkOrder(order.id, '测试员');
+
+    const preempt = preemptSparePart(order.id, part.id, 5, '仓库管理员');
+    expect(preempt).toBeDefined();
+    expect(preempt.status).toBe('preempted');
+    expect(preempt.quantity).toBe(5);
+
+    const partAfter = getSparePartById(part.id);
+    expect(partAfter!.stock_quantity).toBe(20);
+    expect(partAfter!.preempt_quantity).toBe(5);
+    expect(partAfter!.available_quantity).toBe(15);
+  });
+
+  test('should not allow duplicate preemption for same part in same order', () => {
+    const part = createSparePart({
+      name: '重复预占测试件',
+      code: 'PREEMPT-DUP-001',
+      unit: '个',
+      stock_quantity: 10,
+    });
+
+    const vehicle = createVehicle({
+      plate_number: '京K-PREEMPT-002',
+      model: '测试车',
+      purchase_date: '2024-01-01',
+    });
+
+    const order = createWorkOrder({
+      vehicle_id: vehicle.id,
+      title: '重复预占测试',
+      fault_level: 'minor',
+    });
+
+    assignWorkOrder(order.id, '测试员');
+    preemptSparePart(order.id, part.id, 3, '管理员');
+
+    expect(() => {
+      preemptSparePart(order.id, part.id, 2, '管理员');
+    }).toThrow(BusinessError);
+  });
+
+  test('should release preempted part', () => {
+    const part = createSparePart({
+      name: '释放测试件',
+      code: 'PREEMPT-RELEASE-001',
+      unit: '个',
+      stock_quantity: 15,
+    });
+
+    const vehicle = createVehicle({
+      plate_number: '京L-PREEMPT-003',
+      model: '测试车',
+      purchase_date: '2024-01-01',
+    });
+
+    const order = createWorkOrder({
+      vehicle_id: vehicle.id,
+      title: '释放测试工单',
+      fault_level: 'minor',
+    });
+
+    assignWorkOrder(order.id, '测试员');
+    preemptSparePart(order.id, part.id, 4, '管理员');
+
+    const released = releasePreempt(order.id, part.id, '管理员', '测试释放');
+    expect(released.status).toBe('released');
+
+    const partAfter = getSparePartById(part.id);
+    expect(partAfter!.preempt_quantity).toBe(0);
+    expect(partAfter!.available_quantity).toBe(15);
+  });
+
+  test('should confirm preempted part (acceptance)', () => {
+    const part = createSparePart({
+      name: '确认测试件',
+      code: 'PREEMPT-CONFIRM-001',
+      unit: '个',
+      stock_quantity: 25,
+      unit_price: 80,
+    });
+
+    const vehicle = createVehicle({
+      plate_number: '京M-PREEMPT-004',
+      model: '测试车',
+      purchase_date: '2024-01-01',
+    });
+
+    const order = createWorkOrder({
+      vehicle_id: vehicle.id,
+      title: '确认测试工单',
+      fault_level: 'minor',
+    });
+
+    assignWorkOrder(order.id, '测试员');
+    preemptSparePart(order.id, part.id, 5, '管理员');
+    completeWorkOrder(order.id, '维修完成');
+
+    const confirmed = confirmPreempt(order.id, part.id, '质检员');
+    expect(confirmed.status).toBe('confirmed');
+
+    const partAfter = getSparePartById(part.id);
+    expect(partAfter!.stock_quantity).toBe(20);
+    expect(partAfter!.preempt_quantity).toBe(0);
+    expect(partAfter!.available_quantity).toBe(20);
+  });
+
+  test('should release all preempts when order is cancelled', () => {
+    const part1 = createSparePart({
+      name: '取消测试件1',
+      code: 'CANCEL-TEST-001',
+      unit: '个',
+      stock_quantity: 30,
+    });
+    const part2 = createSparePart({
+      name: '取消测试件2',
+      code: 'CANCEL-TEST-002',
+      unit: '个',
+      stock_quantity: 40,
+    });
+
+    const vehicle = createVehicle({
+      plate_number: '京N-CANCEL-001',
+      model: '测试车',
+      purchase_date: '2024-01-01',
+    });
+
+    const order = createWorkOrder({
+      vehicle_id: vehicle.id,
+      title: '取消测试工单',
+      fault_level: 'minor',
+    });
+
+    assignWorkOrder(order.id, '测试员');
+    preemptSparePart(order.id, part1.id, 5, '管理员');
+    preemptSparePart(order.id, part2.id, 10, '管理员');
+
+    cancelWorkOrder(order.id, '客户取消', '管理员');
+
+    const part1After = getSparePartById(part1.id);
+    const part2After = getSparePartById(part2.id);
+    expect(part1After!.preempt_quantity).toBe(0);
+    expect(part1After!.available_quantity).toBe(30);
+    expect(part2After!.preempt_quantity).toBe(0);
+    expect(part2After!.available_quantity).toBe(40);
+
+    const preempts = getWorkOrderPreempts(order.id, 'preempted');
+    expect(preempts.length).toBe(0);
+  });
+
+  test('should release all preempts when order is rejected', () => {
+    const part = createSparePart({
+      name: '驳回测试件',
+      code: 'REJECT-TEST-001',
+      unit: '个',
+      stock_quantity: 50,
+    });
+
+    const vehicle = createVehicle({
+      plate_number: '京O-REJECT-001',
+      model: '测试车',
+      purchase_date: '2024-01-01',
+    });
+
+    const order = createWorkOrder({
+      vehicle_id: vehicle.id,
+      title: '驳回测试工单',
+      fault_level: 'minor',
+    });
+
+    assignWorkOrder(order.id, '测试员');
+    preemptSparePart(order.id, part.id, 8, '管理员');
+    completeWorkOrder(order.id, '维修完成');
+
+    rejectWorkOrder(order.id, '质量不达标', '质检员');
+
+    const partAfter = getSparePartById(part.id);
+    expect(partAfter!.preempt_quantity).toBe(0);
+    expect(partAfter!.available_quantity).toBe(50);
+
+    const rejectedOrder = getWorkOrderById(order.id);
+    expect(rejectedOrder!.status).toBe('rejected');
+  });
+
+  test('preempted quantity cannot be consumed twice', () => {
+    const part = createSparePart({
+      name: '防重复扣减测试',
+      code: 'NO-DOUBLE-001',
+      unit: '个',
+      stock_quantity: 20,
+      unit_price: 50,
+    });
+
+    const vehicle = createVehicle({
+      plate_number: '京P-DOUBLE-001',
+      model: '测试车',
+      purchase_date: '2024-01-01',
+    });
+
+    const order = createWorkOrder({
+      vehicle_id: vehicle.id,
+      title: '防重复扣减工单',
+      fault_level: 'minor',
+    });
+
+    assignWorkOrder(order.id, '测试员');
+    preemptSparePart(order.id, part.id, 5, '管理员');
+    completeWorkOrder(order.id, '完成');
+
+    confirmPreempt(order.id, part.id, '质检员');
+
+    const partAfter = getSparePartById(part.id);
+    expect(partAfter!.stock_quantity).toBe(15);
+
+    expect(() => {
+      confirmPreempt(order.id, part.id, '质检员');
+    }).toThrow(BusinessError);
+  });
+});
+
+describe('Timeout Warning System', () => {
+  test('should have default timeout configs', () => {
+    const configs = listTimeoutConfigs();
+    expect(configs.length).toBe(4);
+    expect(configs.find(c => c.fault_level === 'minor')).toBeDefined();
+    expect(configs.find(c => c.fault_level === 'medium')).toBeDefined();
+    expect(configs.find(c => c.fault_level === 'major')).toBeDefined();
+    expect(configs.find(c => c.fault_level === 'critical')).toBeDefined();
+  });
+
+  test('should update timeout config', () => {
+    const updated = updateTimeoutConfig('minor', 10, 20);
+    expect(updated.warning_hours).toBe(10);
+    expect(updated.overdue_hours).toBe(20);
+  });
+
+  test('should calculate timeout status correctly', () => {
+    const vehicle = createVehicle({
+      plate_number: '京Q-TIMEOUT-001',
+      model: '测试超时车',
+      purchase_date: '2024-01-01',
+    });
+
+    const order = createWorkOrder({
+      vehicle_id: vehicle.id,
+      title: '超时测试工单',
+      fault_level: 'minor',
+    });
+
+    assignWorkOrder(order.id, '测试员');
+
+    const info = getWorkOrderTimeoutInfo(order.id);
+    expect(info).toBeDefined();
+    expect(info!.timeout_status).toBe('normal');
+    expect(info!.elapsed_hours).toBeGreaterThanOrEqual(0);
+  });
+
+  test('should get timeout work orders by status', () => {
+    const normalOrders = getTimeoutWorkOrders('normal');
+    expect(Array.isArray(normalOrders)).toBe(true);
+  });
+});
+
+describe('Work Order Statistics', () => {
+  test('should get statistics filtered by technician', () => {
+    const tech = createTechnician({
+      name: '统计测试师',
+      employee_no: 'TECH-STAT-001',
+    });
+
+    const today = new Date().toISOString().split('T')[0];
+    createSchedule({
+      technician_id: tech.id,
+      shift_date: today,
+      shift_type: 'morning',
+    });
+
+    const vehicle = createVehicle({
+      plate_number: '京R-STAT-001',
+      model: '统计测试车',
+      purchase_date: '2024-01-01',
+    });
+
+    const order = createWorkOrder({
+      vehicle_id: vehicle.id,
+      title: '统计测试工单',
+      fault_level: 'medium',
+    });
+
+    assignWorkOrder(order.id, tech.id);
+
+    const stats = getWorkOrderStatistics({ technician_id: tech.id });
+    expect(stats.length).toBeGreaterThan(0);
+    expect(stats.every(s => s.assigned_to === tech.id)).toBe(true);
+  });
+
+  test('should get statistics filtered by vehicle', () => {
+    const vehicle = createVehicle({
+      plate_number: '京S-STAT-002',
+      model: '统计测试车2',
+      purchase_date: '2024-01-01',
+    });
+
+    const order = createWorkOrder({
+      vehicle_id: vehicle.id,
+      title: '统计测试工单2',
+      fault_level: 'minor',
+    });
+
+    const stats = getWorkOrderStatistics({ vehicle_id: vehicle.id });
+    expect(stats.length).toBeGreaterThan(0);
+    expect(stats.every(s => s.vehicle_id === vehicle.id)).toBe(true);
+  });
+
+  test('should get statistics with part filter', () => {
+    const part = createSparePart({
+      name: '统计备件',
+      code: 'STAT-PART-001',
+      unit: '个',
+      stock_quantity: 100,
+      unit_price: 10,
+    });
+
+    const vehicle = createVehicle({
+      plate_number: '京T-STAT-003',
+      model: '统计测试车3',
+      purchase_date: '2024-01-01',
+    });
+
+    const order = createWorkOrder({
+      vehicle_id: vehicle.id,
+      title: '备件统计工单',
+      fault_level: 'minor',
+    });
+
+    assignWorkOrder(order.id, '测试员');
+    useSparePart(order.id, part.id, 2, '管理员');
+
+    const stats = getWorkOrderStatistics({ part_id: part.id });
+    expect(stats.length).toBeGreaterThan(0);
+  });
+
+  test('should get statistics filtered by status and fault level', () => {
+    const stats = getWorkOrderStatistics({
+      status: 'in_repair',
+      fault_level: 'minor',
+    });
+    expect(Array.isArray(stats)).toBe(true);
+    expect(stats.every(s => s.status === 'in_repair')).toBe(true);
+    expect(stats.every(s => s.fault_level === 'minor')).toBe(true);
+  });
+
+  test('should include timeout status in statistics', () => {
+    const stats = getWorkOrderStatistics({});
+    expect(stats.length).toBeGreaterThan(0);
+    expect(stats[0].timeout_status).toBeDefined();
+    expect(['normal', 'warning', 'overdue']).toContain(stats[0].timeout_status);
+  });
+});
+
+describe('Data Consistency After Restart', () => {
+  test('should maintain technician schedules after restart', () => {
+    const tech = createTechnician({
+      name: '重启测试师',
+      employee_no: 'TECH-RESTART-001',
+    });
+
+    const today = new Date().toISOString().split('T')[0];
+    createSchedule({
+      technician_id: tech.id,
+      shift_date: today,
+      shift_type: 'morning',
+    });
+
+    closeDatabase();
+    initDatabase(dbPath);
+
+    const techAfter = getTechnicianById(tech.id);
+    expect(techAfter).toBeDefined();
+    expect(techAfter!.status).toBe('active');
+
+    const schedules = listSchedules(tech.id);
+    expect(schedules.length).toBeGreaterThan(0);
+    expect(schedules[0].shift_type).toBe('morning');
+  });
+
+  test('should maintain part preemptions after restart', () => {
+    const part = createSparePart({
+      name: '重启预占测试件',
+      code: 'RESTART-PREEMPT-001',
+      unit: '个',
+      stock_quantity: 50,
+      unit_price: 25,
+    });
+
+    const vehicle = createVehicle({
+      plate_number: '京U-RESTART-001',
+      model: '重启测试车',
+      purchase_date: '2024-01-01',
+    });
+
+    const order = createWorkOrder({
+      vehicle_id: vehicle.id,
+      title: '重启预占工单',
+      fault_level: 'minor',
+    });
+
+    assignWorkOrder(order.id, '测试员');
+    preemptSparePart(order.id, part.id, 10, '管理员');
+
+    closeDatabase();
+    initDatabase(dbPath);
+
+    const partAfter = getSparePartById(part.id);
+    expect(partAfter!.stock_quantity).toBe(50);
+    expect(partAfter!.preempt_quantity).toBe(10);
+    expect(partAfter!.available_quantity).toBe(40);
+
+    const preempts = getWorkOrderPreempts(order.id, 'preempted');
+    expect(preempts.length).toBe(1);
+    expect(preempts[0].quantity).toBe(10);
+  });
+
+  test('should maintain timeout configs and status after restart', () => {
+    const vehicle = createVehicle({
+      plate_number: '京V-RESTART-002',
+      model: '重启超时测试',
+      purchase_date: '2024-01-01',
+    });
+
+    const order = createWorkOrder({
+      vehicle_id: vehicle.id,
+      title: '重启超时工单',
+      fault_level: 'medium',
+    });
+
+    assignWorkOrder(order.id, '测试员');
+    const infoBefore = getWorkOrderTimeoutInfo(order.id);
+
+    closeDatabase();
+    initDatabase(dbPath);
+
+    const configs = listTimeoutConfigs();
+    expect(configs.length).toBe(4);
+
+    const infoAfter = getWorkOrderTimeoutInfo(order.id);
+    expect(infoAfter).toBeDefined();
+    expect(infoAfter!.overdue_hours).toBe(infoBefore!.overdue_hours);
+
+    const orderAfter = getWorkOrderById(order.id);
+    expect(orderAfter).toBeDefined();
+    expect(orderAfter!.in_repair_at).toBeTruthy();
   });
 });

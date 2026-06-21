@@ -102,6 +102,9 @@ function createTables(db: Database.Database): void {
       updated_at TEXT NOT NULL,
       cancelled_at TEXT,
       cancel_reason TEXT,
+      in_repair_at TEXT,
+      rejected_at TEXT,
+      reject_reason TEXT,
       FOREIGN KEY (vehicle_id) REFERENCES vehicles(id),
       FOREIGN KEY (maintenance_plan_id) REFERENCES maintenance_plans(id)
     );
@@ -113,6 +116,8 @@ function createTables(db: Database.Database): void {
       specification TEXT,
       unit TEXT NOT NULL,
       stock_quantity INTEGER NOT NULL DEFAULT 0,
+      preempt_quantity INTEGER NOT NULL DEFAULT 0,
+      available_quantity INTEGER NOT NULL DEFAULT 0,
       warning_threshold INTEGER NOT NULL DEFAULT 10,
       unit_price REAL NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
@@ -140,6 +145,8 @@ function createTables(db: Database.Database): void {
       quantity INTEGER NOT NULL,
       before_balance INTEGER NOT NULL,
       after_balance INTEGER NOT NULL,
+      before_preempt INTEGER NOT NULL DEFAULT 0,
+      after_preempt INTEGER NOT NULL DEFAULT 0,
       operator TEXT NOT NULL,
       remark TEXT,
       created_at TEXT NOT NULL,
@@ -165,7 +172,116 @@ function createTables(db: Database.Database): void {
       operator TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS technicians (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      employee_no TEXT UNIQUE NOT NULL,
+      phone TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      skill_tags TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS technician_schedules (
+      id TEXT PRIMARY KEY,
+      technician_id TEXT NOT NULL,
+      shift_date TEXT NOT NULL,
+      shift_type TEXT NOT NULL,
+      start_time TEXT,
+      end_time TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (technician_id) REFERENCES technicians(id),
+      UNIQUE(technician_id, shift_date)
+    );
+
+    CREATE TABLE IF NOT EXISTS part_preempts (
+      id TEXT PRIMARY KEY,
+      work_order_id TEXT NOT NULL,
+      part_id TEXT NOT NULL,
+      part_name TEXT NOT NULL,
+      quantity INTEGER NOT NULL,
+      unit_price REAL NOT NULL,
+      status TEXT NOT NULL DEFAULT 'preempted',
+      preempted_at TEXT NOT NULL,
+      released_at TEXT,
+      confirmed_at TEXT,
+      released_by TEXT,
+      confirmed_by TEXT,
+      release_reason TEXT,
+      FOREIGN KEY (work_order_id) REFERENCES work_orders(id),
+      FOREIGN KEY (part_id) REFERENCES spare_parts(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS timeout_configs (
+      id TEXT PRIMARY KEY,
+      fault_level TEXT UNIQUE NOT NULL,
+      warning_hours REAL NOT NULL,
+      overdue_hours REAL NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
+
+  migrateAndSeed(db);
+}
+
+function migrateAndSeed(db: Database.Database): void {
+  const columns = db.prepare("PRAGMA table_info(work_orders)").all() as { name: string }[];
+  const colNames = columns.map(c => c.name);
+
+  if (!colNames.includes('in_repair_at')) {
+    db.exec('ALTER TABLE work_orders ADD COLUMN in_repair_at TEXT');
+  }
+  if (!colNames.includes('rejected_at')) {
+    db.exec('ALTER TABLE work_orders ADD COLUMN rejected_at TEXT');
+  }
+  if (!colNames.includes('reject_reason')) {
+    db.exec('ALTER TABLE work_orders ADD COLUMN reject_reason TEXT');
+  }
+
+  const spColumns = db.prepare("PRAGMA table_info(spare_parts)").all() as { name: string }[];
+  const spColNames = spColumns.map(c => c.name);
+
+  if (!spColNames.includes('preempt_quantity')) {
+    db.exec('ALTER TABLE spare_parts ADD COLUMN preempt_quantity INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!spColNames.includes('available_quantity')) {
+    db.exec('ALTER TABLE spare_parts ADD COLUMN available_quantity INTEGER NOT NULL DEFAULT 0');
+  }
+
+  db.prepare('UPDATE spare_parts SET available_quantity = stock_quantity - preempt_quantity').run();
+
+  const ptColumns = db.prepare("PRAGMA table_info(part_transactions)").all() as { name: string }[];
+  const ptColNames = ptColumns.map(c => c.name);
+
+  if (!ptColNames.includes('before_preempt')) {
+    db.exec('ALTER TABLE part_transactions ADD COLUMN before_preempt INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!ptColNames.includes('after_preempt')) {
+    db.exec('ALTER TABLE part_transactions ADD COLUMN after_preempt INTEGER NOT NULL DEFAULT 0');
+  }
+
+  const timeoutCount = db.prepare('SELECT COUNT(*) as count FROM timeout_configs').get() as { count: number };
+  if (timeoutCount.count === 0) {
+    const nowStr = new Date().toISOString();
+    const insertStmt = db.prepare(`
+      INSERT INTO timeout_configs (id, fault_level, warning_hours, overdue_hours, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    const defaults = [
+      { level: 'minor', warning: 24, overdue: 48 },
+      { level: 'medium', warning: 12, overdue: 24 },
+      { level: 'major', warning: 6, overdue: 12 },
+      { level: 'critical', warning: 2, overdue: 4 },
+    ];
+    const { v4: uuidv4 } = require('uuid');
+    for (const d of defaults) {
+      insertStmt.run(uuidv4(), d.level, d.warning, d.overdue, nowStr, nowStr);
+    }
+  }
 }
 
 export function closeDatabase(): void {
